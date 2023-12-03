@@ -55,6 +55,7 @@ def beer_lambert(
     geo3d: xr.DataArray,
     dpf: xr.DataArray,
     spectrum: str = "prahl",
+    calc_od: bool = True
 ):
     """Calculate concentration changes from amplitude data."""
     validators.has_channel(amplitudes)
@@ -69,7 +70,10 @@ def beer_lambert(
     dists = channel_distances(amplitudes, geo3d)
     dists = dists.pint.to("mm")
 
-    optical_density = -np.log(amplitudes / amplitudes.mean("time"))
+    if calc_od:
+        optical_density = -np.log(amplitudes / amplitudes.mean("time"))
+    else:
+        optical_density = amplitudes
     # conc = Einv @ (optical_density / ( dists * dpf))
     conc = xr.dot(Einv, optical_density / (dists * dpf), dims=["wavelength"])
     conc = conc.pint.to("micromolar")

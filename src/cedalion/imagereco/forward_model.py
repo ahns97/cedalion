@@ -27,7 +27,7 @@ class TwoSurfaceHeadModel:
     segmentation_masks: xr.DataArray
     brain: cdc.Surface
     scalp: cdc.Surface
-    landmarks: Optional[cdt.LabeledPointCloud]
+    landmarks: cdt.LabeledPointCloud
     t_ijk2ras: cdt.AffineTransform
     t_ras2ijk: cdt.AffineTransform
     voxel_to_vertex_brain: scipy.sparse.spmatrix
@@ -233,6 +233,29 @@ class ForwardModel:
 
         return fluence
 
+    def _get_ppath_from_mcx(self, i_optode: int, j_optode, nphoton: int):
+        cfg = {
+            "nphoton": nphoton,
+            "vol": self.volume,
+            "tstart": 0,
+            "tend": 5e-9,
+            "tstep": 5e-9,
+            "srcpos": self.optode_pos.values[i_optode],
+            "srcdir": self.optode_dir.values[i_optode],
+            "detpos": [np.hstack((self.optode_pos.values[j_optode], np.array([1])))],
+            "prop": self.tissue_properties,
+            "issrcfrom0": 1,
+            "isnormalized": 1,
+            "outputtype": "fluence",
+            "seed": int(np.floor(np.random.rand() * 1e7)),
+            "issavedet": 1,
+            "unitinmm": self.unitinmm,
+        }
+
+        result = pmcx.mcxlab(cfg) 
+        
+        return result["detp"]["ppath"]
+
     def _fluence_at_optodes(self, fluence, emitting_opt):
         """Fluence caused by one optode at the positions of all other optodes."""
         n_optodes = len(self.optode_pos)
@@ -317,6 +340,30 @@ class ForwardModel:
         )
 
         return fluence_all, fluence_at_optodes
+
+    def compute_ppath(self, n_photon: int = 1e8):
+        n_tissues = self.head_model.segmentation_masks.shape[0]
+        n_measures = self.measurement_list.shape[0]
+
+        # the fluence per voxel, wavelength and optode position
+        # FIXME this may become large. eventually cache on disk?
+        #ppath = np.zeros((n_measures, n_photons, n_tissues))
+        ppath_all = np.zeros((n_measures, n_tissues))
+       
+        count = 0
+        for s_idx, d_idx, in zip(self.measurement_list['sourceIndex'], self.measurement_list['detectorIndex']):
+            label1 = self.optode_pos.label.values[s_idx]
+            label2 = self.optode_pos.label.values[d_idx]
+            print(f"simulating fluence for {label1}-{label2}. {count+1} / {n_measures}")
+
+            # run MCX
+            ppath = self._get_ppath_from_mcx(s_idx, d_idx, nphoton=n_photon)
+            #ppath_all[count, :, :] = ppath
+            ppath_all[count, :] = np.mean(ppath, axis=0)
+
+            count += 1
+
+        return ppath_all
 
     def compute_sensitivity(self, fluence_all, fluence_at_optodes):
         channels = self.measurement_list.channel.unique().tolist()

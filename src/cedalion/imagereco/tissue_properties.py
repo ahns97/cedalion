@@ -30,6 +30,7 @@ TISSUE_LABELS: Dict[str, TissueType] = {
     "brain": TissueType.GM,
     "wm": TissueType.WM,
     "white matter": TissueType.WM,
+    "whitegray": TissueType.GM,
 }
 
 # FIXME units, reference

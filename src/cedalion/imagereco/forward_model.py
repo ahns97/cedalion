@@ -27,7 +27,7 @@ class TwoSurfaceHeadModel:
     segmentation_masks: xr.DataArray
     brain: cdc.Surface
     scalp: cdc.Surface
-    landmarks: cdt.LabeledPointCloud
+    landmarks: Optional[cdt.LabeledPointCloud]
     t_ijk2ras: cdt.AffineTransform
     t_ras2ijk: cdt.AffineTransform
     voxel_to_vertex_brain: scipy.sparse.spmatrix
@@ -253,8 +253,10 @@ class ForwardModel:
         }
 
         result = pmcx.mcxlab(cfg) 
-        
-        return result["detp"]["ppath"]
+        if 'detp' in result.keys(): 
+            return result["detp"]["ppath"]
+        else:
+            return None
 
     def _fluence_at_optodes(self, fluence, emitting_opt):
         """Fluence caused by one optode at the positions of all other optodes."""
@@ -358,8 +360,11 @@ class ForwardModel:
 
             # run MCX
             ppath = self._get_ppath_from_mcx(s_idx, d_idx, nphoton=n_photon)
-            #ppath_all[count, :, :] = ppath
-            ppath_all[count, :] = np.mean(ppath, axis=0)
+            if ppath is not None:
+                ppath_all[count, :] = np.mean(ppath, axis=0)
+                #ppath_all[count, :, :] = ppath
+            else: 
+                ppath_all[count, :] = np.array([np.nan for i in range(n_tissues)])
 
             count += 1
 

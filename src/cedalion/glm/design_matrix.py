@@ -131,7 +131,7 @@ def make_hrf_regressors(
     n_pre = round(trange[0] / dt)
     n_post = round(trange[1] / dt)
     # np.arange results can be non-consistent when using non-integer steps
-    #t_hrf = np.arange(n_pre * dt, (n_post + 1) * dt, dt)   
+    # t_hrf = np.arange(n_pre * dt, (n_post + 1) * dt, dt)
     # using linspace instead
     t_hrf = np.linspace(trange[0], trange[1], abs(n_post) + abs(n_pre) + 1)
     nt = len(t)
@@ -145,8 +145,10 @@ def make_hrf_regressors(
 
     # handle case of single condition
     if n_cond == 1:
-        cond_names = np.array([cond_names])
-        s = np.expand_dims(s, axis=1)
+        if cond_names.shape == ():
+            cond_names = np.array([cond_names])
+        if len(s.shape) == 1:
+            s = np.expand_dims(s, axis=1)
 
     for i_cond in range(n_cond):
         lst_t = np.where(s[:, lst_cond[i_cond]] == 1)[0]
@@ -352,8 +354,10 @@ def construct_afni_gamma_basis(t_hrf, params_basis):
         bas = t_hrf / (p * q)
         # Numpy does not seem to allow fractional powers of negative numbers, even if
         # the power would not result in a complex number.
-        # tbasis[:, 0, i_conc] = np.array((np.array(bas, dtype=np.complex128)) ** p, dtype=np.float64) * np.exp(p - t_hrf / q)
-        tbasis[:, 0, i_conc] = (bas**p) * np.exp(p - t_hrf / q)
+        tbasis[:, 0, i_conc] = np.array(
+            (np.array(bas, dtype=np.complex128)) ** p, dtype=np.float64
+        ) * np.exp(p - t_hrf / q)
+        # tbasis[:, 0, i_conc] = (bas**p) * np.exp(p - t_hrf / q)
 
         if tt > 0:
             foo = np.convolve(tbasis[:, 0, i_conc], np.ones(int(tt / dt))) / int(
@@ -450,8 +454,7 @@ def closest_short_channel(y, short_channels, middle_positions, as_xarray=False):
 
         if as_xarray:
             # For each channel, fetch the data from the closest short channel and assign it
-            for chromo in y.chromo.values:  # Assuming 2 chromophores: HbO and HbR
-                # [{"time": y.time, "chromo": chromo, "channel": ch}]
+            for chromo in y.chromo.values:
                 closest_short.loc[{"chromo": chromo, "channel": ch}] = y.sel(
                     chromo=chromo, channel=closest_name
                 )
@@ -537,7 +540,9 @@ def make_reg_dict(y, add_regressors):
     unique_short = np.unique(add_regressors.values)
 
     ss_data = y.sel(channel=unique_short)
-    ss_data = ss_data.drop_vars(["samples", "source", "detector", "sbj"])
+    ss_data = ss_data.drop_vars(
+        ["samples", "source", "detector", "sbj"], errors="ignore"
+    )
     ss_data = ss_data.rename({"channel": "regressor"})
 
     reg_dict = {}

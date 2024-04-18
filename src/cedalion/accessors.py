@@ -98,5 +98,8 @@ class StimAccessor:
         conds = self.conditions()
         stim_arr = xr.DataArray(np.zeros((time.shape[0], len(conds))), dims=["time", "condition"], coords={"time" : time, "condition" : conds})
         for index, row in stim.iterrows():
-            stim_arr.loc[row.onset, row.trial_type] = 1
+            if row.onset < 0 or row.onset > time[-1]:
+                continue
+            time_point = time.sel(time=row.onset, method='nearest')
+            stim_arr.loc[time_point, row.trial_type] = 1
         return stim_arr

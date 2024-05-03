@@ -3,50 +3,124 @@ from scipy.linalg import eigh
 from sklearn.cross_decomposition import CCA
 import cedalion.dataclasses as cdc
 import cedalion.typing as cdt
+from typing import Optional
+import xarray as xr
 
-def spoc(x: cdt.NDTimeSeries,
-         z: cdt.NDTimeSeries, 
-         only_max: bool = False) -> tuple:
+class SPoC():
     """ Implements SPoC_lambda algorithm based on :cite:t:`BIBTEXLABEL`.
 
-    Find spatial filters W that maximize the covariance between the bandpower of 
-    the projected x signal, P(w.T * x), and z. Such a covariance defines the 
-    objective function of the problem, whose solution can be formulated as the 
-    one for a generalized eigenvalue problem.
-    
-    Args:
-        x (:class:`NDTimeSeries`, (channel, time)): Temporal signal.
-        z (:class:`NDTimeSeries`, (time)): Target function.
-        only_max (bool): If True, it returns only the filter corresponding to 
-            maximum eigenvalue/covariance. If False, it returns all components.
-    
-    Returns:
-        eig_values (ndarray): Array of eigenvalues. The latter also coincide with 
-            the corresponding covariance between P(w.T * x) and z.
-        W (ndarray): (Full rank) array containing the spatial filters. Each row
-            corresponding to a different eigenvalue/covariance.
+        Given a vector-valued time signal x(t) and a scalar target function z(t), 
+        SPoC finds spatial filters W that maximize the covariance between
+        the bandpower of the projected x signal, P(W.T @ x), and z. 
+        Such a covariance defines the objective function of the problem, whose solution 
+        can be formulated as the one for a generalized eigenvalue problem.
+        The reconstructed sources s are given by the backward model s = W.T @ x.
+
+        Assumptions:
+            x(t) is of shape Nx x Nt, where Nx is the number of channels and Nt the 
+            number of time points, and it is band-pass filtered in the frequency band 
+            of interest. 
+            z(e) is a standardize vector (zero mean and unit variance) of shape 1 x Ne, 
+            where Ne < Nt is the number of "epochs". The latter represent labels 
+            for intervals of the original time series. 
+            Bandpower of the projected signal W.T @ x is then approximated by its 
+            variance within epochs.
     """
     
-    Ntz = len(z.time)
-    Ntx = len(x.time)
-    if Ntz >= Ntx:
-        raise ValueError("x should have more time points than z")
-    
-    # Split signal into bins and build matrices for the generalized eigenvalue problem
-    x_epochs = x.groupby_bins(group='time', bins=Ntz)
-    Cxxe = np.stack([np.cov(xe) for _, xe in x_epochs])  # Per-bin covariance matrix
-    Cxx = Cxxe.mean(axis=0)
-    Cxxz = (Cxxe * z.data.reshape(-1, 1, 1)).mean(axis=0)
-    
-    # Solve generalized eigenvalue problem
-    if only_max:
-        subset = [len(x.channel) - 1, len(x.channel) - 1]
-    else:
-        subset = None
+    def __init__(self):
+
+        # Spatial filters (initialized after calling the fit function)
+        self.W = None
+
+    def fit(self,
+            x: cdt.NDTimeSeries,
+            z: xr.DataArray, 
+            only_max: bool = True) -> np.ndarray:
+        """ Fit the model on the (x, z) dataset.
+
+        Solve the generalized eigenvalue problem and store the trained spatial filters W
+        as a local state of the class.
         
-    eig_values, W = eigh(Cxxz, Cxx, eigvals_only=False, subset_by_index=subset)
+        Args:
+            x (:class:`NDTimeSeries`, (channel, time)): Temporal signal 
+            of shape Nx x Nt.
+            z (:class:`DataArray`, (time)): Target (scalar) function
+            of shape 1 x Ne, with Ne < Nt. 
+            only_max: If True, it returns only the filter corresponding to 
+                maximum eigenvalue/covariance. If False, it returns all Nx components.
+        
+        Returns:
+            scores: Array of Nx eigenvalues. The latter also coincide with 
+                the corresponding covariances between P(W.T @ x) and z. 
+                If only_max = True, eig_values is a single element, corresponding 
+                to the maximum covariance. 
+        """
+        
+        # Catch incompatible lengths
+        Ne = len(z.time)
+        Nt = len(x.time)
+        Nx = len(x.channel)
+        if Nt <= Ne:
+            raise ValueError("x should have more time points than z")
+        
+        # Standardize z
+        z = standardize(z, dim='time')
+        
+        # Split signal into epochs and build matrices for the eigenvalue problem
+        x_epochs = x.groupby_bins(group='time', bins=Ne)
+        Cxxe = np.stack([np.cov(xe) for _, xe in x_epochs])  # Epoch-wise cov. matrix
+        Cxx = Cxxe.mean(axis=0)
+        Cxxz = (Cxxe * z.values.reshape(-1, 1, 1)).mean(axis=0)
+        
+        # Select only the maximum-covariance component if only_max
+        subset = [Nx - 1, Nx - 1] if only_max else None
+
+        # Solve generalized eigenvalue problem
+        scores, W = eigh(Cxxz, Cxx, eigvals_only=False, subset_by_index=subset)
+        # Update state
+        self.W = xr.DataArray(W, coords={'channel': x.channel, 
+                                         'component': [f'S{i}' 
+                                                       for i in range(len(scores))]})
+        
+        return scores
     
-    return eig_values, W
+    def transform(self,
+                  x: cdt.NDTimeSeries, 
+                  only_component: bool = False,
+                  Ne: Optional[int] = None) -> xr.DataArray | tuple[xr.DataArray, 
+                                                                    xr.DataArray]:
+        """ Apply backward model to x to build reconstructed sources.
+
+        Get reconstructed sources s by projecting x along the spatial filtes.
+        If only_component = False, also estimate epoch-wise bandpower of the
+        components via the per-epoch variance. 
+
+        Args:
+            x (:class:`NDTimeSeries`, (channel, time)): Temporal signal
+                of shape Nx x Nt.
+            only_component: Wether to return only the reconstructed sources
+                or also the epoch-wise bandpower.
+            Ne: Number of epochs along which to estimate the bandpower.
+
+        Returns:
+            s: Reconstructed sources (W.T @ x).
+            s_power: standardized epoch-wise bandpower of s (Var(W.T @ x)).
+        """
+        
+        # Build reconstructed sources from projection
+        s = self.W.T @ x
+
+        if only_component:
+            return s
+        
+        else:
+            # Split into epochs, estimate bandpower, and standardize
+            s_epochs = s.groupby_bins(group='time', bins=Ne)
+            s_power = standardize(s_epochs.var(), dim='time_bins')
+
+            return s, s_power
+
+
 
 class mSPoC():
     """ Implements mSPoC algorithm based on :cite:t:`BIBTEXLABEL`.
@@ -253,4 +327,10 @@ class mSPoC():
         return np.stack([x[:, i*e_len:(i+1)*e_len] for i in range(Ne)])
         
 
+def standardize(x: cdt.NDTimeSeriesSchema, dim: str = 'time'):
+    """Standardize x along dimension dim.
+    """
 
+    x_standard = (x - x.mean(dim))/x.std(dim)
+
+    return x_standard

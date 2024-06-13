@@ -7,7 +7,7 @@ from enum import Enum
 import logging
 from numpy.typing import ArrayLike
 
-from typing import Dict
+from typing import Any
 from strenum import StrEnum
 
 from cedalion.dataclasses import PointType
@@ -324,24 +324,27 @@ def stim_to_dataframe(stim):
     for st in stim:
         columns = ["onset", "duration", "value"]
 
-        ncols = st.data.shape[1]
+        if st.data is None:
+            tmp = pd.DataFrame(columns=columns)
+        else:
+            ncols = st.data.shape[1]
 
-        if ncols > 3:
-            if (st.dataLabels is not None) and (len(st.dataLabels) == ncols):
-                for i in range(3, ncols):
-                    columns.append(st.dataLabels[i])
-            else:
-                for i in range(3, ncols):
-                    columns.append(f"col{i}")
+            if ncols > 3:
+                if (st.dataLabels is not None) and (len(st.dataLabels) == ncols):
+                    for i in range(3, ncols):
+                        columns.append(st.dataLabels[i])
+                else:
+                    for i in range(3, ncols):
+                        columns.append(f"col{i}")
 
-        tmp = pd.DataFrame(st.data, columns=columns)
-        tmp["trial_type"] = st.name
+            tmp = pd.DataFrame(st.data, columns=columns)
+            tmp["trial_type"] = st.name
         dfs.append(tmp)
 
     return pd.concat(dfs, ignore_index=True)
 
 
-def read_aux(nirs_element: NirsElement):
+def read_aux(nirs_element: NirsElement, opts: dict[str, Any]):
     result = {}
 
     for aux in nirs_element.aux:
@@ -353,20 +356,30 @@ def read_aux(nirs_element: NirsElement):
         if units is None:
             units = "1"
 
-        if aux.dataTimeSeries.ndim == 1:
+        ntimes = len(aux.time)
+
+        aux_data = aux.dataTimeSeries
+
+        if opts["squeeze_aux"]:
+            aux_data = np.squeeze(aux_data)
+
+        if aux_data.ndim == 1:
             dims = ["time"]
-        elif aux.dataTimeSeries.ndim == 2:
+        elif aux_data.ndim == 2:
             dims = ["time", "aux_channel"]
+            if aux_data.shape[1] == ntimes:
+                aux_data = aux_data.transpose()
         else:
             raise ValueError("aux.dataTimeSeries must have either 1 or 2 dimensions.")
 
         x = xr.DataArray(
-            aux.dataTimeSeries,
+            aux_data,
             coords={"time": aux.time},
             dims=dims,
             name=name,
             attrs={"units": units, "time_offset": time_offset},
         )
+
         result[name] = x.pint.quantify()
 
     return result
@@ -509,14 +522,14 @@ def _get_channel_coords(
     return indices, coordinates
 
 
-def read_nirs_element(nirs_element):
+def read_nirs_element(nirs_element, opts):
     geo3d = geometry_from_probe(nirs_element)
     stim = stim_to_dataframe(nirs_element.stim)
     data = []
     for data_element in nirs_element.data:
         data.extend(read_data_elements(data_element, nirs_element))
 
-    aux = read_aux(nirs_element)
+    aux = read_aux(nirs_element, opts)
 
     meta_data = meta_data_tags_to_dict(nirs_element)
 
@@ -536,9 +549,11 @@ def read_nirs_element(nirs_element):
     return ne
 
 
-def read_snirf(fname):
+def read_snirf(fname, squeeze_aux=False):
+    opts = {"squeeze_aux": squeeze_aux}
+
     with Snirf(fname, "r") as s:
-        return [read_nirs_element(ne) for ne in s.nirs]
+        return [read_nirs_element(ne, opts) for ne in s.nirs]
 
 
 def denormalize_measurement_list(df_ml: pd.DataFrame, nirs_element: NirsElement):
@@ -633,8 +648,8 @@ def write_snirf(
     geo3d: xr.DataArray,
     stim: pd.DataFrame,
     measurement_list: pd.DataFrame,
-    aux: Dict[str, xr.DataArray] = {},
-    meta_data: Dict = {},
+    aux: dict[str, xr.DataArray] = {},
+    meta_data: dict = {},
 ):
     if data_type not in ["amplitude", "od", "concentration"]:
         raise ValueError(

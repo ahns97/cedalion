@@ -425,8 +425,7 @@ def read_data_elements(
 
     for data_type_group, df in df_ml.groupby("data_type_group"):
         has_wavelengths = not pd.isna(df.wavelength).all()
-        has_chromo = True
-        # has_chromo = not pd.isna(df.chromo).all()
+        has_chromo = not pd.isna(df.chromo).all()
 
         is_hrf = (not pd.isna(df.dataTypeIndex).all()) and ("HRF" in data_type_group)
 
